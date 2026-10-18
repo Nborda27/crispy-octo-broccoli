@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ADIÓS NONINO — la melodía como paisaje</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=IBM+Plex+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root{--bg:#E7E5DF;--ink:#1B1A18;--acc:#C43D1C}
+  body.dark{--bg:#0F0F0E;--ink:#DCD9D0;--acc:#E4562F}
+  html,body{margin:0;height:100%;background:var(--bg);overflow:hidden}
+  #wrap{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+  canvas{display:block;touch-action:none;cursor:ew-resize}
+  #ui{position:absolute;display:flex;gap:18px;font:400 11px/1 "IBM Plex Mono",ui-monospace,monospace;letter-spacing:.06em}
+  #ui button{all:unset;cursor:pointer;color:var(--ink);opacity:.62;text-transform:uppercase;border-bottom:1px solid transparent;padding-bottom:2px}
+  #ui button:hover{opacity:1;border-bottom-color:var(--ink)}
+  #ui button.on{opacity:1;color:var(--acc);border-bottom-color:var(--acc)}
+  #ytbox{position:absolute;display:none;box-shadow:0 0 0 1px var(--ink)}
+  #ytbox.on{display:block}
+  body.rec #ui{display:none}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c"></canvas></div>
+<div id="ui">
+  <button id="bPlay">‖ pausa</button>
+  <button id="bTheme">oscuro</button>
+  <button id="bYT">♪ con audio original</button>
+</div>
+<div id="ytbox"><div id="yt"></div></div>
+<script>
+const DATA = /*__DATA__*/null;
+(() => {
+const S = DATA.series, FPS = DATA.meta.fps, N = S.midi.length, DUR = (N-1)/FPS, OFF = DATA.meta.offset_s;
+const PH = DATA.phrases, ONS = DATA.onsets;
+const params = new URLSearchParams(location.search);
+const REC = params.has('rec');
+if (REC) document.body.classList.add('rec');
+if (params.get('theme') === 'dark') document.body.classList.add('dark');
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const ui = document.getElementById('ui'), ytbox = document.getElementById('ytbox');
+const MONO = '"IBM Plex Mono", ui-monospace, Menlo, monospace';
+const SERIF = '"Instrument Serif", "Times New Roman", Times, serif';
+const NAMES = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
+const GLYPH = ['C','c','D','d','E','F','f','G','g','A','a','B']; // minúscula = sostenido
+const RAMP = '  ·.:-=+*#';
+const M_BOT = 57, M_TOP = 77; // A3 .. F5, una fila por semitono
+
+let t = parseFloat(params.get('t') || '0') || 0, playing = true, speed = 1;
+let mode = 'silent', player = null, ytReady = false;
+let W, H, dpr, L = {}, grain = null, theme = {};
+
+// ---------- data helpers ----------
+const at = (arr, tt) => { const f = Math.max(0, Math.min(N-1, tt*FPS)); const i = Math.floor(f), j = Math.min(N-1, i+1), u = f-i; return arr[i]*(1-u)+arr[j]*u; };
+const near = (arr, tt) => arr[Math.max(0, Math.min(N-1, Math.round(tt*FPS)))];
+const phraseAt = tt => { for (let i = PH.length-1; i >= 0; i--) if (tt >= PH[i].start) return i; return 0; };
+const hz = m => 440*Math.pow(2,(m-69)/12);
+const noteName = m => { const r = Math.round(m); return NAMES[((r%12)+12)%12] + (Math.floor(r/12)-1); };
+const tc = s => { const a = OFF+s, m = Math.floor(a/60), sec = a-m*60; return String(m).padStart(2,'0')+':'+sec.toFixed(2).padStart(5,'0'); };
+const hash = (a,b) => { const x = Math.sin(a*12.9898 + b*78.233)*43758.5453; return x - Math.floor(x); };
+const pad2 = n => String(n).padStart(2,'0');
+// smoothed loudness for the bellows
+const RS = (() => { const o = new Float32Array(N), k = Math.round(FPS*0.8); let acc = 0; for (let i = 0; i < N; i++){ acc += S.rms[i]; if (i >= k) acc -= S.rms[i-k]; o[i] = acc/Math.min(i+1,k);} return o; })();
+
+function readTheme(){
+  const cs = getComputedStyle(document.body);
+  theme = { bg: cs.getPropertyValue('--bg').trim(), ink: cs.getPropertyValue('--ink').trim(), acc: cs.getPropertyValue('--acc').trim(), dark: document.body.classList.contains('dark') };
+  makeGrain();
+}
+function makeGrain(){
+  const g = document.createElement('canvas'); g.width = g.height = 256;
+  const gx = g.getContext('2d'), id = gx.createImageData(256,256);
+  for (let i = 0; i < id.data.length; i += 4){ const v = Math.random() < .5 ? 0 : 255; id.data[i]=id.data[i+1]=id.data[i+2]=v; id.data[i+3] = Math.random()*(theme.dark?22:26); }
+  gx.putImageData(id,0,0); grain = ctx.createPattern(g,'repeat');
+}
+
+// ---------- layout ----------
+function layout(){
+  const vw = innerWidth, vh = innerHeight;
+  // keep a 4:5 page (X-friendly) unless the window is much wider
+  const ar = params.get('ar') === '1' ? 1 : 0.8;
+  if (vw/vh > ar){ H = vh; W = Math.round(Math.min(vw, vh*ar*1.0)); } else { W = vw; H = Math.round(Math.min(vh, vw/ar)); }
+  if (vw/vh > 1.3 && !REC){ W = Math.min(vw, Math.round(vh*1.25)); H = vh; }
+  dpr = Math.min(2, devicePixelRatio || 1);
+  cv.width = W*dpr; cv.height = H*dpr; cv.style.width = W+'px'; cv.style.height = H+'px';
+  const u = Math.min(W, H*0.9);
+  L.m = Math.round(u*0.055);
+  L.fs = Math.max(9, Math.round(u*0.0112));     // small mono
+  L.lh = Math.round(L.fs*1.45);
+  L.cw0 = Math.max(10, u*0.0128);               // grid mono size
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.font = `400 ${L.fs}px ${MONO}`;
+  // title fit
+  L.titleY = L.m + L.lh*4.6;
+  let ts = 100; ctx.font = `400 ${ts}px ${SERIF}`; const tw = ctx.measureText('ADIÓS NONINO').width;
+  L.ts = Math.floor(ts*(W-2*L.m)/tw*0.995);
+  L.titleBase = L.titleY + L.ts*0.70;
+  L.subY = L.titleBase + L.ts*0.12 + L.lh*1.4;
+  // overview + footer
+  L.footY = H - L.m;
+  L.ovH = Math.round(H*0.085);
+  L.ovY = L.footY - L.lh*2.2 - L.ovH;
+  // field
+  L.fy1 = L.ovY - L.lh*2.4;
+  L.rows = M_TOP - M_BOT + 1;
+  { const A = L.subY + L.lh*2.4, k = 2.6/L.rows; L.fy0 = (A + k*L.fy1)/(1+k); }
+  L.rh = (L.fy1 - L.fy0)/L.rows;
+  L.gfs = Math.min(L.cw0*1.0, L.rh*0.92);
+  ctx.font = `400 ${L.gfs}px ${MONO}`;
+  L.cw = ctx.measureText('M').width*1.02;
+  L.axisW = L.cw*4;
+  L.fx0 = L.m + L.axisW; L.fx1 = W - L.m;
+  L.cols = Math.floor((L.fx1 - L.fx0)/L.cw);
+  L.winSec = 16;
+  L.dtc = L.winSec / L.cols;
+  L.px = L.fx0 + (L.fx1-L.fx0)*0.56;
+  // UI
+  const r = cv.getBoundingClientRect();
+  ui.style.right = (innerWidth - r.right + L.m) + 'px'; ui.style.top = (r.top + L.footY - L.fs) + 'px'; ui.style.fontSize = L.fs+'px';
+  const yw = Math.round(W*0.26), yh = Math.round(yw*9/16);
+  ytbox.style.width = yw+'px'; ytbox.style.height = yh+'px';
+  ytbox.style.left = (r.left + W - L.m - yw) + 'px'; ytbox.style.top = (r.top + L.fy0 + L.rh) + 'px';
+}
+
+// ---------- render ----------
+function txt(s, x, y, size, opts = {}){
+  ctx.font = `${opts.w||400} ${size}px ${opts.serif?SERIF:MONO}`;
+  ctx.textAlign = opts.align||'left'; ctx.textBaseline = opts.base||'alphabetic';
+  ctx.fillStyle = opts.color||theme.ink; ctx.globalAlpha = opts.a ?? 1;
+  if (opts.ls){ ctx.letterSpacing = opts.ls; }
+  ctx.fillText(s, x, y); ctx.globalAlpha = 1; ctx.letterSpacing = '0px';
+}
+function hline(x0,x1,y,a=1,col){ ctx.globalAlpha=a; ctx.fillStyle=col||theme.ink; ctx.fillRect(x0,Math.round(y),x1-x0,1); ctx.globalAlpha=1; }
+function vline(x,y0,y1,a=1,col){ ctx.globalAlpha=a; ctx.fillStyle=col||theme.ink; ctx.fillRect(Math.round(x),y0,1,y1-y0); ctx.globalAlpha=1; }
+
+function render(){
+  const {m, fs, lh} = L, ink = theme.ink, acc = theme.acc;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.fillStyle = theme.bg; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle = grain; ctx.fillRect(0,0,W,H);
+
+  const pi = phraseAt(t), mi = near(S.midi,t), rr = at(S.rms,t);
+  // --- corners: metadata ---
+  const tl = ['ASTOR PIAZZOLLA', 'ADIÓS NONINO · 1959', 'VERSIÓN: ARTEM AMARO', 'RCS GLASGOW · 16.06.2013'];
+  tl.forEach((s,i)=>txt(s, m, m+fs+i*lh, fs, {a: i<2?0.9:0.55, ls:'0.06em'}));
+  const cx = W*0.5;
+  ['ESTUDIO Nº 01', 'LA MELODÍA COMO PAISAJE', 'ANÁLISIS 25 FPS · 150 S', 'GRANO = DINÁMICA'].forEach((s,i)=>txt(s, cx - W*0.06, m+fs+i*lh, fs, {a: i===0?0.9:0.55, ls:'0.06em'}));
+  const tr = ['TC 04:00 → ' + tc(t), 'FRASE ' + pad2(pi+1) + ' / ' + pad2(PH.length), mode==='yt' ? 'MODO: AUDIO ORIGINAL (YOUTUBE)' : 'MODO: SILENCIO', (playing?'▸ ':'‖ ') + (t/DUR*100).toFixed(1).padStart(5,' ') + ' %'];
+  tr.forEach((s,i)=>txt(s, W-m, m+fs+i*lh, fs, {align:'right', a: i<2?0.95:0.55, color: i===0?acc:ink, ls:'0.06em'}));
+
+  // --- title ---
+  // title + woven rule: the rule sits at the exact vertical middle of the capitals,
+  // runs behind NONINO (letters occlude it) and over ADIÓS (bg halo cuts the letters), unbroken.
+  const tx = m - L.ts*0.02;
+  ctx.font = `400 ${L.ts}px ${SERIF}`;
+  const capH = ctx.measureText('H').actualBoundingBoxAscent;
+  const ry = L.titleBase - capH/2, lw = Math.max(1, W/720);
+  const adW = ctx.measureText('ADIÓS').width, spW = ctx.measureText(' ').width;
+  L.rule = {y: ry, lw, capH, x1: tx + adW + spW*0.5};
+  const rule = () => { ctx.globalAlpha = 0.9; ctx.fillStyle = theme.ink; ctx.fillRect(m, ry - lw/2, W-2*m, lw); ctx.globalAlpha = 1; };
+  rule();                                                         // 1) full line, under everything
+  txt('ADIÓS NONINO', tx, L.titleBase, L.ts, {serif:true, a:1});  // 2) letters occlude it (NONINO stays on top)
+  ctx.save(); ctx.beginPath(); ctx.rect(m, ry - lw*4, L.rule.x1 - m, lw*8); ctx.clip();
+  const h = Math.max(2, lw*1.6);
+  ctx.fillStyle = theme.bg; ctx.fillRect(m, ry - lw/2 - h, L.rule.x1 - m, lw + 2*h); // halo knocks the letters out
+  ctx.fillStyle = grain; ctx.fillRect(m, ry - lw/2 - h, L.rule.x1 - m, lw + 2*h);
+  ctx.globalAlpha = 0.9; ctx.fillStyle = theme.ink; ctx.fillRect(m, ry - lw/2, L.rule.x1 - m, lw); // 3) over ADIÓS
+  ctx.restore(); ctx.globalAlpha = 1;
+  const sub = 'Una fila por semitono (A3 → F5). La letra es la nota estimada de la voz superior — minúscula = sostenido. Debajo, el grano: más denso cuanto más fuerte.';
+  wrapText(sub, m, L.subY, (W-2*m)*0.62, fs, lh, 0.62);
+  txt('fig. 1', W-m, L.subY, fs, {align:'right', a:0.55});
+
+  drawField();
+  drawOverview(pi);
+
+  // --- footer readout ---
+  const f0 = hz(mi), db = at(S.db,t), br = at(S.bright,t), tp = at(S.tempo,t);
+  const left = `f₀ ${f0.toFixed(1).padStart(6,' ')} Hz   ${noteName(mi).padEnd(3,' ')}   ${db.toFixed(1).padStart(5,' ')} dB   brillo ${br.toFixed(2)}   pulso ≈${Math.round(tp)}`;
+  txt(left, m, L.footY, fs, {ls:'0.03em', a:0.9});
+  if (REC) txt('ARRASTRAR ⇆ · ESPACIO ▸‖ · ← → FRASE · D · Y', W-m, L.footY, fs, {align:'right', a:0.5, ls:'0.05em'});
+}
+
+function wrapText(s, x, y, maxW, size, lh, a){
+  ctx.font = `400 ${size}px ${MONO}`; const words = s.split(' '); let line = '', yy = y;
+  for (const w of words){ const tst = line ? line+' '+w : w; if (ctx.measureText(tst).width > maxW && line){ txt(line,x,yy,size,{a}); line = w; yy += lh; } else line = tst; }
+  if (line) txt(line,x,yy,size,{a});
+}
+
+function rowY(r){ return L.fy0 + (r+0.5)*L.rh; } // r: 0 top
+function midiRow(mm){ return Math.max(0, Math.min(L.rows-1, Math.round(M_TOP - mm))); }
+
+function drawField(){
+  const {fx0, fx1, fy0, fy1, cw, dtc, px, rows, rh, gfs} = L, ink = theme.ink, acc = theme.acc;
+  // bellows (fuelle): hairline pleats breathing with smoothed loudness
+  const br = RS[Math.max(0,Math.min(N-1,Math.round(t*FPS)))];
+  const open = 0.55 + 1.1*br;
+  for (let s = -1; s <= 1; s += 2){
+    for (let i = 1; i <= 14; i++){
+      const x = px + s*Math.pow(i,1.12)*cw*1.6*open;
+      if (x < fx0 || x > fx1) continue;
+      const a = 0.05 + 0.05*(i%2);
+      vline(x, fy0, fy1, a);
+      // pleat chevrons at the top and bottom
+      ctx.globalAlpha = a*1.6; ctx.strokeStyle = ink; ctx.lineWidth = 1; ctx.beginPath();
+      const d = cw*0.55*open*(i%2?1:-1)*s;
+      ctx.moveTo(x, fy0-rh*0.9); ctx.lineTo(x+d, fy0-rh*0.45); ctx.lineTo(x, fy0);
+      ctx.moveTo(x, fy1); ctx.lineTo(x+d, fy1+rh*0.45); ctx.lineTo(x, fy1+rh*0.9);
+      ctx.stroke(); ctx.globalAlpha = 1;
+    }
+  }
+  // axis: note names per semitone
+  for (let r = 0; r < rows; r++){
+    const mm = M_TOP - r, isC = ((mm%12)+12)%12 === 0, nat = !NAMES[((mm%12)+12)%12].includes('♯');
+    if (nat || isC) txt(noteName(mm), L.m, rowY(r), gfs*0.72, {base:'middle', a: isC?0.75:0.32});
+    if (isC) hline(fx0, fx1, rowY(r)+rh*0.5, 0.12);
+  }
+  hline(fx0, fx1, fy0, 0.5); hline(fx0, fx1, fy1, 0.5);
+
+  ctx.font = `400 ${gfs}px ${MONO}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const k0 = Math.floor((t - (px-fx0)/cw*dtc)/dtc) - 1, k1 = Math.ceil((t + (fx1-px)/cw*dtc)/dtc) + 1;
+  const pr = new Map();
+  for (let k = k0; k <= k1; k++){
+    const tt = k*dtc; if (tt < 0 || tt > DUR) continue;
+    const x = px + (tt - t)/dtc*cw; if (x < fx0 + cw*0.3 || x > fx1 - cw*0.3) continue;
+    const past = tt <= t, fade = past ? 1 : 0.2;
+    // gentle fade toward the edges
+    const edge = Math.min(1, (x-fx0)/(cw*6), (fx1-x)/(cw*6));
+    const mm = near(S.midi, tt), r = at(S.rms, tt), b = at(S.bright, tt), on = at(S.onset, tt);
+    const row = midiRow(mm);
+    // above the line: sparse air flecks from brightness
+    for (let rr = 0; rr < row; rr++){
+      const h = hash(k, rr+101);
+      if (h < b*0.06){ ctx.globalAlpha = 0.28*fade*edge; ctx.fillStyle = ink; ctx.fillText("'", x, rowY(rr)); }
+    }
+    // the terrain under the melody: density = dynamics, decays with depth
+    const reach = 3 + r*26;
+    for (let rr = row+1; rr < rows; rr++){
+      const d = rr - row;
+      let v = r*Math.exp(-d/reach)*(0.78 + 0.22*hash(k, rr)) + 0.05*hash(k*3, rr);
+      v = Math.min(0.999, v*1.3);
+      const ch = RAMP[Math.floor(v*RAMP.length)];
+      if (ch === ' ') continue;
+      ctx.globalAlpha = (0.18 + 0.55*v)*fade*edge; ctx.fillStyle = ink; ctx.fillText(ch, x, rowY(rr));
+    }
+    // melody glyph
+    const g = GLYPH[((Math.round(mm)%12)+12)%12];
+    ctx.font = `${r > 0.45 ? 500 : 400} ${gfs}px ${MONO}`;
+    ctx.globalAlpha = (0.45 + 0.55*Math.min(1, r*1.6))*fade*edge; ctx.fillStyle = ink;
+    // clear a little behind the letter so it reads as a written line
+    ctx.fillText(g, x, rowY(row));
+    ctx.font = `400 ${gfs}px ${MONO}`;
+    // onset ticks in the band above the field
+    if (on > 0.35){ ctx.globalAlpha = Math.min(1,on)*0.8*fade*edge; ctx.fillRect(Math.round(x), fy0 - rh*(0.25+1.6*Math.min(1,on)), 1, rh*(0.25+1.6*Math.min(1,on)) - 2); }
+  }
+  ctx.globalAlpha = 1;
+  // phrase boundaries
+  PH.forEach((p,i)=>{
+    const x = px + (p.start - t)/dtc*cw; if (x < fx0 || x > fx1) return;
+    for (let y = fy0; y < fy1; y += 6){ ctx.globalAlpha = 0.4; ctx.fillStyle = ink; ctx.fillRect(Math.round(x), y, 1, 3); }
+    ctx.globalAlpha = 1;
+    txt('§'+pad2(i+1), x+5, fy0 + L.lh*1.0, L.fs, {a:0.75});
+  });
+  // playhead
+  vline(px, fy0 - rh*2.1, fy1 + rh*0.6, 0.9, acc);
+  const mm = near(S.midi, t), row = midiRow(mm), y = rowY(row);
+  ctx.fillStyle = acc; ctx.fillRect(px - L.cw*0.5, y - rh*0.5, L.cw, rh);
+  ctx.font = `500 ${gfs}px ${MONO}`; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle = theme.bg;
+  ctx.fillText(GLYPH[((Math.round(mm)%12)+12)%12], px, y);
+  const label = `${noteName(mm)}  ${hz(mm).toFixed(1)} Hz`;
+  txt(label, px + L.cw*1.1, y - rh*0.9, L.fs, {color: acc, base:'middle'});
+  const ly = fy0 - rh*2.3 - L.fs*0.3;
+  txt(tc(t), px - 6, ly, L.fs, {color: acc, align:'right'});
+  txt('ONSETS  ·  ← ESCRITO', fx0, ly, L.fs, {a:0.45});
+  txt('POR VENIR →', fx1, ly, L.fs, {a:0.45, align:'right'});
+}
+
+function drawOverview(pi){
+  const {m, ovY, ovH, fs} = L, ink = theme.ink, acc = theme.acc;
+  const ox = m, ow = W-2*m;
+  txt('PARTITURA COMPLETA · 04:00 → 06:30 · CLIC PARA IR', ox, ovY - L.lh*0.9, fs, {a:0.55, ls:'0.05em'});
+  PH.forEach((p,i)=>{
+    const x0 = ox + p.start/DUR*ow + 2, x1 = ox + p.end/DUR*ow - 2, cur = i===pi;
+    const a = cur ? 1 : 0.38;
+    txt(pad2(i+1), x0, ovY + fs*0.9, fs*0.9, {a, color: cur?acc:ink});
+    const by0 = ovY + fs*1.6, bh = ovH - fs*1.6;
+    // dynamics as hairlines from the bottom
+    for (let x = x0; x < x1; x += 2){
+      const tt = (x-ox)/ow*DUR, r = at(S.rms,tt);
+      ctx.globalAlpha = a*0.35; ctx.fillStyle = ink; ctx.fillRect(x, by0+bh - r*bh*0.45, 1, r*bh*0.45);
+      const mm = near(S.midi,tt), yy = by0 + (M_TOP-mm)/(M_TOP-M_BOT)*bh*0.9;
+      ctx.globalAlpha = a*(0.4+0.6*Math.min(1,r*1.5)); ctx.fillRect(x, yy, 1.6, 1.6);
+    }
+    ctx.globalAlpha = 1;
+    hline(x0, x1, by0+bh, a*0.6);
+  });
+  const x = ox + t/DUR*ow; vline(x, ovY, ovY+ovH, 1, acc);
+  L.ov = {x:ox, y:ovY - L.lh, w:ow, h:ovH + L.lh};
+}
+
+// ---------- loop ----------
+let last = performance.now();
+function frame(now){
+  const dt = Math.min(0.1, (now-last)/1000); last = now;
+  if (mode === 'yt' && ytReady && player && player.getCurrentTime){
+    const ct = player.getCurrentTime() - OFF;
+    if (!dragging) t = Math.max(0, Math.min(DUR, ct));
+    try { playing = player.getPlayerState() === 1; } catch(e){}
+    if (ct > DUR + 0.5 && playing) player.seekTo(OFF, true);
+  } else if (playing && !dragging){
+    t += dt*speed; if (t > DUR) t = 0;
+  }
+  render();
+  if (!REC) requestAnimationFrame(frame);
+}
+
+// ---------- interaction ----------
+let dragging = false, dragX = 0, dragT = 0, dragOv = false;
+function inOv(x,y){ const o = L.ov; return o && x>=o.x && x<=o.x+o.w && y>=o.y && y<=o.y+o.h; }
+function seekTo(nt){ t = Math.max(0, Math.min(DUR, nt)); if (mode==='yt' && ytReady) player.seekTo(OFF+t, true); if (REC) render(); }
+cv.addEventListener('pointerdown', e => {
+  const r = cv.getBoundingClientRect(), x = e.clientX-r.left, y = e.clientY-r.top;
+  dragging = true; cv.setPointerCapture(e.pointerId);
+  dragOv = inOv(x,y); dragX = x; dragT = t;
+  if (dragOv) seekTo((x-L.ov.x)/L.ov.w*DUR);
+});
+cv.addEventListener('pointermove', e => {
+  if (!dragging) return; const r = cv.getBoundingClientRect(), x = e.clientX-r.left;
+  if (dragOv) seekTo((x-L.ov.x)/L.ov.w*DUR); else seekTo(dragT - (x-dragX)/L.cw*L.dtc);
+});
+const endDrag = () => { dragging = false; };
+cv.addEventListener('pointerup', endDrag); cv.addEventListener('pointercancel', endDrag);
+cv.addEventListener('wheel', e => { e.preventDefault(); seekTo(t + (e.deltaY + e.deltaX)*0.01); }, {passive:false});
+function togglePlay(){
+  if (mode==='yt' && ytReady){ playing ? player.pauseVideo() : player.playVideo(); }
+  else playing = !playing;
+  syncUI();
+}
+function jumpPhrase(d){ const i = Math.max(0, Math.min(PH.length-1, phraseAt(t) + d + (d<0 && t-PH[phraseAt(t)].start>1.5 ? 1 : 0))); seekTo(PH[i].start + 0.01); }
+addEventListener('keydown', e => {
+  if (e.code==='Space'){ e.preventDefault(); togglePlay(); }
+  else if (e.key==='ArrowRight') jumpPhrase(1);
+  else if (e.key==='ArrowLeft') jumpPhrase(-1);
+  else if (e.key==='d' || e.key==='D') toggleTheme();
+  else if (e.key==='y' || e.key==='Y') toggleYT();
+  else if (e.key==='r' || e.key==='R') seekTo(0);
+});
+function toggleTheme(){ document.body.classList.toggle('dark'); readTheme(); syncUI(); if (REC) render(); }
+function syncUI(){
+  document.getElementById('bPlay').textContent = playing ? '‖ pausa' : '▸ reproducir';
+  document.getElementById('bTheme').textContent = theme.dark ? 'claro' : 'oscuro';
+  document.getElementById('bYT').classList.toggle('on', mode==='yt');
+  document.getElementById('bYT').textContent = mode==='yt' ? '♪ audio original · salir' : '♪ con audio original';
+}
+document.getElementById('bPlay').onclick = togglePlay;
+document.getElementById('bTheme').onclick = toggleTheme;
+document.getElementById('bYT').onclick = toggleYT;
+
+// YouTube IFrame API: the audio is never shipped with the page; the official player plays it.
+function toggleYT(){
+  if (mode === 'yt'){ mode = 'silent'; if (player && ytReady) player.pauseVideo(); ytbox.classList.remove('on'); playing = true; syncUI(); return; }
+  mode = 'yt'; ytbox.classList.add('on'); syncUI();
+  if (player){ if (ytReady){ player.seekTo(OFF+t,true); player.playVideo(); } return; }
+  window.onYouTubeIframeAPIReady = () => {
+    player = new YT.Player('yt', { width:'100%', height:'100%', videoId: DATA.meta.video_id,
+      playerVars: { start: Math.floor(OFF+t), autoplay: 1, playsinline: 1, rel: 0, controls: 1 },
+      events: { onReady: e => { ytReady = true; e.target.seekTo(OFF+t, true); e.target.playVideo(); }, onStateChange: () => syncUI() } });
+  };
+  const s = document.createElement('script'); s.src = 'https://www.youtube.com/iframe_api'; document.head.appendChild(s);
+}
+
+// API for deterministic capture
+window.__nonino = { layout: () => ({rule: L.rule, base: L.titleBase, dpr}), setTime: v => { t = v; render(); }, pause: () => { playing = false; }, dur: DUR, phrases: PH };
+
+addEventListener('resize', () => { layout(); render(); });
+const fontsP = document.fonts ? Promise.all(['400 20px "Instrument Serif"','400 20px "IBM Plex Mono"','500 20px "IBM Plex Mono"','300 20px "IBM Plex Mono"'].map(f=>document.fonts.load(f, 'AÓ♯'))).catch(()=>{}) : Promise.resolve();
+Promise.race([fontsP, new Promise(r=>setTimeout(r,2500))]).then(() => {
+  readTheme(); layout(); syncUI(); if (REC) playing = false; render(); if (!REC) requestAnimationFrame(frame);
+  window.__ready = true;
+});
+})();
+</script>
+</body>
+</html>
