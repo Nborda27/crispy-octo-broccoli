@@ -2,24 +2,32 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>ADIÓS NONINO — la melodía como paisaje</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=IBM+Plex+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
-  :root{--bg:#E7E5DF;--ink:#1B1A18;--acc:#C43D1C}
+  :root{
+    --bg:#E7E5DF;--ink:#1B1A18;--acc:#C43D1C;
+    --sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px);
+    --sal:env(safe-area-inset-left,0px);--sar:env(safe-area-inset-right,0px)
+  }
   body.dark{--bg:#0F0F0E;--ink:#DCD9D0;--acc:#E4562F}
-  html,body{margin:0;height:100%;background:var(--bg);overflow:hidden}
+  html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;overscroll-behavior:none}
   #wrap{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
   canvas{display:block;touch-action:none;cursor:ew-resize}
-  #ui{position:absolute;display:flex;gap:18px;font:400 11px/1 "IBM Plex Mono",ui-monospace,monospace;letter-spacing:.06em}
-  #ui button{all:unset;cursor:pointer;color:var(--ink);opacity:.62;text-transform:uppercase;border-bottom:1px solid transparent;padding-bottom:2px}
+  #ui{position:absolute;z-index:2;display:flex;gap:18px;font:400 11px/1 "IBM Plex Mono",ui-monospace,monospace;letter-spacing:.06em}
+  #ui button{all:unset;cursor:pointer;color:var(--ink);opacity:.62;text-transform:uppercase;border-bottom:1px solid transparent;padding-bottom:2px;touch-action:manipulation}
   #ui button:hover{opacity:1;border-bottom-color:var(--ink)}
   #ui button.on{opacity:1;color:var(--acc);border-bottom-color:var(--acc)}
-  #ytbox{position:absolute;display:none;box-shadow:0 0 0 1px var(--ink)}
+  #ytbox{position:absolute;z-index:3;display:none;box-shadow:0 0 0 1px var(--ink)}
   #ytbox.on{display:block}
   body.rec #ui{display:none}
+  body.mobile{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:none}
+  body.mobile #ui{gap:14px;row-gap:6px;align-items:center}
+  body.mobile #ui button{min-height:44px;display:inline-flex;align-items:center;padding:0 2px;-webkit-tap-highlight-color:transparent}
+  body.mobile.landscape #ui button{min-height:34px}
 </style>
 </head>
 <body>
@@ -41,6 +49,8 @@ if (REC) document.body.classList.add('rec');
 if (params.get('theme') === 'dark') document.body.classList.add('dark');
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 const ui = document.getElementById('ui'), ytbox = document.getElementById('ytbox');
+const wrap = document.getElementById('wrap');
+const AUDIT = params.has('audit');
 const MONO = '"IBM Plex Mono", ui-monospace, Menlo, monospace';
 const SERIF = '"Instrument Serif", "Times New Roman", Times, serif';
 const NAMES = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
@@ -77,8 +87,40 @@ function makeGrain(){
 }
 
 // ---------- layout ----------
+function cssPx(name){
+  const n = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name));
+  return Number.isFinite(n) ? n : 0;
+}
+function wrapCount(s, maxW, size){
+  ctx.font = `400 ${size}px ${MONO}`; ctx.letterSpacing = '0px';
+  const words = s.split(' '); let line = '', n = 1;
+  for (const w of words){ const tst = line ? line+' '+w : w; if (ctx.measureText(tst).width > maxW && line){ n++; line = w; } else line = tst; }
+  return line ? n : 0;
+}
+function buttonLabels(){
+  return [
+    (playing ? '‖ pausa' : '▸ reproducir').toUpperCase(),
+    (document.body.classList.contains('dark') ? 'claro' : 'oscuro').toUpperCase(),
+    (mode==='yt' ? '♪ audio original · salir' : '♪ con audio original').toUpperCase()
+  ];
+}
+function resetPosterChrome(){
+  document.body.classList.remove('landscape');
+  wrap.style.display = '';
+  cv.style.position = ''; cv.style.left = ''; cv.style.top = '';
+  ui.style.left = ''; ui.style.width = ''; ui.style.maxWidth = '';
+  ui.style.flexWrap = ''; ui.style.justifyContent = ''; ui.style.alignItems = '';
+  ui.style.rowGap = ''; ui.style.gap = ''; ui.style.right = '';
+}
+// Phones, portrait and landscape. The poster (and ?rec=1) keep the desktop sheet.
+function isPhone(vw, vh){ return Math.min(vw, vh) <= 500 && Math.max(vw, vh) <= 1000; }
 function layout(){
   const vw = innerWidth, vh = innerHeight;
+  L.mobile = !REC && isPhone(vw, vh);
+  document.body.classList.toggle('mobile', L.mobile);
+  document.body.classList.toggle('landscape', L.mobile && vw > vh);
+  if (L.mobile){ layoutMobile(vw, vh); return; }
+  resetPosterChrome();
   // keep a 4:5 page (X-friendly) unless the window is much wider
   const ar = params.get('ar') === '1' ? 1 : 0.8;
   if (vw/vh > ar){ H = vh; W = Math.round(Math.min(vw, vh*ar*1.0)); } else { W = vw; H = Math.round(Math.min(vh, vw/ar)); }
@@ -123,6 +165,123 @@ function layout(){
   ytbox.style.width = yw+'px'; ytbox.style.height = yh+'px';
   ytbox.style.left = (r.left + W - L.m - yw) + 'px'; ytbox.style.top = (r.top + L.fy0 + L.rh) + 'px';
 }
+function layoutMobile(vw, vh){
+  const wide = vw > vh;
+  const sal = cssPx('--sal'), sar = cssPx('--sar'), sat = cssPx('--sat'), sab = cssPx('--sab');
+  if (!L._didFit) L._uiForce = 0;
+  wrap.style.display = 'block';
+  cv.style.position = 'absolute';
+  cv.style.left = sal + 'px'; cv.style.top = sat + 'px';
+  W = Math.max(220, Math.round(vw - sal - sar));
+  H = Math.max(220, Math.round(vh - sat - sab));
+  dpr = Math.min(3, Math.max(1, devicePixelRatio || 1));
+  cv.width = Math.round(W*dpr); cv.height = Math.round(H*dpr);
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  L.wide = wide;
+  L.rows = M_TOP - M_BOT + 1;
+  L.m = wide ? 12 : Math.max(14, Math.round(W*0.042));
+  L.fs = wide ? (H < 380 ? 11 : 12) : (W <= 370 ? 12 : 13);
+  L.lh = Math.round(L.fs*1.42);
+  L.metaLines = wide ? 1 : 3;
+  L.readLines = wide ? 1 : 2;
+  const innerW = W - 2*L.m;
+  ctx.font = `400 ${L.fs}px ${MONO}`; ctx.letterSpacing = '0.06em';
+  const gap = 14; let lines = 1, cur = 0;
+  for (const t of buttonLabels()){
+    const tw = ctx.measureText(t).width;
+    if (cur > 0 && cur + gap + tw > innerW){ lines++; cur = tw; }
+    else cur = cur > 0 ? cur + gap + tw : tw;
+  }
+  ctx.letterSpacing = '0px';
+  const btnH = wide ? 34 : 44;
+  L.uiLines = lines;
+  L.uiH = Math.max(lines*btnH + (lines-1)*6, L._uiForce || 0);
+  L.ytH = mode==='yt' ? (wide ? Math.min(84, Math.round(H*0.22)) : Math.min(118, Math.round(innerW*0.34))) : 0;
+  L.legend = wide ? '' : 'La melodía como paisaje · una fila por semitono · grano = dinámica';
+  L.legendLines = L.legend ? wrapCount(L.legend, innerW, L.fs) : 0;
+  if (L.legendLines > 2){ L.legend = 'Una fila por semitono · grano = dinámica'; L.legendLines = wrapCount(L.legend, innerW, L.fs); }
+  let ts0 = 100; ctx.font = `400 ${ts0}px ${SERIF}`;
+  const titleW = ctx.measureText('ADIÓS NONINO').width;
+  const fit = Math.floor(ts0*innerW/titleW*0.995);
+  L.ts = wide ? Math.min(fit, Math.round(H*0.15)) : fit;
+  L.ovH = wide ? Math.max(Math.round(L.fs*2.7), Math.round(H*0.12)) : Math.max(Math.round(L.fs*2.8), Math.round(H*0.07));
+  const minRh = wide ? 7.4 : 9;
+  const minOv = Math.round(L.fs*2.7);
+  function place(){
+    const lh = L.lh, fs = L.fs, m = L.m;
+    const metaLast = m + fs + (L.metaLines-1)*lh;
+    ctx.font = `400 ${L.ts}px ${SERIF}`;
+    const ascent = ctx.measureText('Ó').actualBoundingBoxAscent || L.ts*0.72;
+    const descent = ctx.measureText('ADIÓS NONINO').actualBoundingBoxDescent || 0;
+    L.metaY = m + fs;
+    L.metaLast = metaLast;
+    L.titleY = metaLast + fs*0.35 + 6 + ascent - L.ts*0.70;
+    L.titleBase = L.titleY + L.ts*0.70;
+    L.subY = L.titleBase + Math.max(descent, 1) + lh*0.5;
+    const legendBottom = L.legendLines ? L.subY + (L.legendLines-1)*lh : L.titleBase + Math.max(descent, 1);
+    L.labelY = legendBottom + lh*(L.legendLines ? 1.0 : 0.8);
+    L.fy0 = L.labelY + Math.round(fs*0.55);
+    L.uiTop = H - m - L.uiH;
+    L.readY = L.uiTop - Math.round(lh*0.55);
+    L.readY0 = L.readY - (L.readLines-1)*lh;
+    const readTop = L.readY0 - fs*0.95;
+    L.ovBottom = readTop - Math.round(lh*0.4);
+    L.ovY = L.ovBottom - L.ovH;
+    const capTop = (L.ovY - lh*0.9) - fs*0.95;
+    if (L.ytH){ L.ytTop = capTop - lh*0.4 - L.ytH; L.fy1 = L.ytTop - lh*0.35; }
+    else { L.ytTop = 0; L.fy1 = capTop - lh*0.2; }
+    L.rh = (L.fy1 - L.fy0)/L.rows;
+    return L.rh;
+  }
+  let guard = 0;
+  while (place() < minRh && guard < 14){
+    guard++;
+    if (L.ovH > minOv) L.ovH -= 3;
+    else if (L.ts > (wide ? 26 : 32)) L.ts -= 2;
+    else if (L.legend){ L.legend = ''; L.legendLines = 0; }
+    else if (L.ytH > 68) L.ytH -= 8;
+    else if (L.m > 8) L.m -= 1;
+    else break;
+  }
+  place();
+  L.cw0 = wide ? Math.min(15, Math.max(8, L.rh*0.9)) : Math.min(22, Math.max(13, L.rh*0.9));
+  L.gfs = Math.min(L.cw0, Math.max(1, L.rh*0.9));
+  ctx.font = `400 ${L.gfs}px ${MONO}`;
+  L.cw = Math.max(1, ctx.measureText('M').width*1.02);
+  L.axisW = L.cw*(L.gfs < 9 ? 3.1 : 4.2);
+  L.fx0 = L.m + L.axisW; L.fx1 = W - L.m;
+  if (L.fx1 - L.fx0 < 48){ L.axisW = L.cw*2.6; L.fx0 = L.m + L.axisW; }
+  L.cols = Math.max(8, Math.floor((L.fx1 - L.fx0)/L.cw));
+  L.winSec = wide ? 16 : 14;
+  L.dtc = L.winSec / L.cols;
+  L.px = L.fx0 + (L.fx1 - L.fx0)*0.56;
+  const r = cv.getBoundingClientRect();
+  ui.style.right = 'auto';
+  ui.style.left = (r.left + L.m) + 'px';
+  ui.style.top = (r.top + L.uiTop) + 'px';
+  ui.style.width = (W - 2*L.m) + 'px';
+  ui.style.fontSize = L.fs + 'px';
+  ui.style.gap = '14px';
+  ui.style.rowGap = '6px';
+  ui.style.flexWrap = 'wrap';
+  ui.style.justifyContent = 'flex-start';
+  ui.style.alignItems = 'center';
+  if (L.ytH){
+    const yw = Math.min(Math.round(L.ytH*16/9), Math.round(L.fx1 - L.fx0));
+    const x = L.fx0 + Math.max(0, (L.fx1 - L.fx0 - yw)/2);
+    ytbox.style.width = yw+'px'; ytbox.style.height = L.ytH+'px';
+    ytbox.style.left = (r.left + x) + 'px'; ytbox.style.top = (r.top + L.ytTop) + 'px';
+  }
+  if (!L._didFit){
+    const uh = Math.ceil(ui.getBoundingClientRect().height);
+    if (uh > L.uiH + 2){
+      L._uiForce = uh; L._didFit = true;
+      try { layoutMobile(vw, vh); }
+      finally { L._didFit = false; }
+    }
+  }
+}
 
 // ---------- render ----------
 function txt(s, x, y, size, opts = {}){
@@ -142,6 +301,8 @@ function render(){
   ctx.fillStyle = grain; ctx.fillRect(0,0,W,H);
 
   const pi = phraseAt(t), mi = near(S.midi,t), rr = at(S.rms,t);
+  if (L.mobile) drawMobileMeta(pi);
+  else {
   // --- corners: metadata ---
   const tl = ['ASTOR PIAZZOLLA', 'ADIÓS NONINO · 1959', 'VERSIÓN: ARTEM AMARO', 'RCS GLASGOW · 16.06.2013'];
   tl.forEach((s,i)=>txt(s, m, m+fs+i*lh, fs, {a: i<2?0.9:0.55, ls:'0.06em'}));
@@ -149,6 +310,7 @@ function render(){
   ['ESTUDIO Nº 01', 'LA MELODÍA COMO PAISAJE', 'ANÁLISIS 25 FPS · 150 S', 'GRANO = DINÁMICA'].forEach((s,i)=>txt(s, cx - W*0.06, m+fs+i*lh, fs, {a: i===0?0.9:0.55, ls:'0.06em'}));
   const tr = ['TC 04:00 → ' + tc(t), 'FRASE ' + pad2(pi+1) + ' / ' + pad2(PH.length), mode==='yt' ? 'MODO: AUDIO ORIGINAL (YOUTUBE)' : 'MODO: SILENCIO', (playing?'▸ ':'‖ ') + (t/DUR*100).toFixed(1).padStart(5,' ') + ' %'];
   tr.forEach((s,i)=>txt(s, W-m, m+fs+i*lh, fs, {align:'right', a: i<2?0.95:0.55, color: i===0?acc:ink, ls:'0.06em'}));
+  }
 
   // --- title ---
   // title + woven rule: the rule sits at the exact vertical middle of the capitals,
@@ -168,18 +330,70 @@ function render(){
   ctx.fillStyle = grain; ctx.fillRect(m, ry - lw/2 - h, L.rule.x1 - m, lw + 2*h);
   ctx.globalAlpha = 0.9; ctx.fillStyle = theme.ink; ctx.fillRect(m, ry - lw/2, L.rule.x1 - m, lw); // 3) over ADIÓS
   ctx.restore(); ctx.globalAlpha = 1;
+  if (!L.mobile){
   const sub = 'Una fila por semitono (A3 → F5). La letra es la nota estimada de la voz superior — minúscula = sostenido. Debajo, el grano: más denso cuanto más fuerte.';
   wrapText(sub, m, L.subY, (W-2*m)*0.62, fs, lh, 0.62);
   txt('fig. 1', W-m, L.subY, fs, {align:'right', a:0.55});
+  } else if (L.legend){
+    wrapText(L.legend, m, L.subY, W-2*m, fs, lh, 0.62);
+  }
 
   drawField();
   drawOverview(pi);
 
   // --- footer readout ---
   const f0 = hz(mi), db = at(S.db,t), br = at(S.bright,t), tp = at(S.tempo,t);
+  if (L.mobile){
+    const note = noteName(mi);
+    if (L.readLines === 1) txt(`f₀ ${f0.toFixed(1)} Hz   ${note}   ${db.toFixed(1)} dB   brillo ${br.toFixed(2)}   pulso ≈${Math.round(tp)}`, m, L.readY, fs, {a:0.9});
+    else {
+      txt(`f₀ ${f0.toFixed(1)} Hz    ${note}    ${db.toFixed(1)} dB`, m, L.readY0, fs, {a:0.92});
+      txt(`brillo ${br.toFixed(2)}    pulso ≈ ${Math.round(tp)}`, m, L.readY, fs, {a:0.72});
+    }
+  } else {
   const left = `f₀ ${f0.toFixed(1).padStart(6,' ')} Hz   ${noteName(mi).padEnd(3,' ')}   ${db.toFixed(1).padStart(5,' ')} dB   brillo ${br.toFixed(2)}   pulso ≈${Math.round(tp)}`;
   txt(left, m, L.footY, fs, {ls:'0.03em', a:0.9});
   if (REC) txt('ARRASTRAR ⇆ · ESPACIO ▸‖ · ← → FRASE · D · Y', W-m, L.footY, fs, {align:'right', a:0.5, ls:'0.05em'});
+  }
+  if (AUDIT) publishAudit();
+}
+
+function drawMobileMeta(pi){
+  const fs = L.fs, lh = L.lh, m = L.m;
+  const pct = (t/DUR*100).toFixed(L.wide ? 0 : 1);
+  let left, right;
+  if (L.wide){
+    left = ['PIAZZOLLA · ADIÓS NONINO · 1959'];
+    right = [`FRASE ${pad2(pi+1)}/${pad2(PH.length)}   ${tc(t)}   ${pct}%` + (mode==='yt' ? '   YT' : '')];
+  } else {
+    left = ['ASTOR PIAZZOLLA', 'ADIÓS NONINO · 1959', 'ARTEM AMARO · GLASGOW'];
+    right = [tc(t), `FRASE ${pad2(pi+1)} / ${pad2(PH.length)}`, `${pct}%  ${mode==='yt' ? 'YOUTUBE' : 'SILENCIO'}`];
+  }
+  const widthOf = (arr) => { ctx.font = `400 ${fs}px ${MONO}`; ctx.letterSpacing = '0.04em'; const w = Math.max(...arr.map(s => ctx.measureText(s).width)); ctx.letterSpacing = '0px'; return w; };
+  if (widthOf(left) + widthOf(right) + fs > W - 2*m){
+    if (L.wide){ left = ['PIAZZOLLA · 1959']; right = [`§${pad2(pi+1)}   ${tc(t)}   ${pct}%`]; }
+    else { left = ['ASTOR PIAZZOLLA', 'NONINO · 1959', 'ARTEM AMARO']; right = [tc(t), `FRASE ${pad2(pi+1)}/${pad2(PH.length)}`, pct + '%']; }
+  }
+  L.metaLeftW = widthOf(left); L.metaRightW = widthOf(right);
+  left.forEach((s,i)=>txt(s, m, L.metaY + i*lh, fs, {a: i===0?0.92:0.6, ls:'0.04em'}));
+  right.forEach((s,i)=>txt(s, W-m, L.metaY + i*lh, fs, {align:'right', a: i===0?0.95:0.7, color: !L.wide && i===0 ? theme.acc : theme.ink, ls:'0.04em'}));
+}
+function publishAudit(){
+  const r = cv.getBoundingClientRect();
+  const ub = ui.getBoundingClientRect();
+  const yb = ytbox.getBoundingClientRect();
+  window.__audit = {
+    mobile: !!L.mobile, wide: !!L.wide, W, H, dpr, fs: L.fs, ts: L.ts, rh: L.rh,
+    canvas: {w: cv.width, h: cv.height, cssW: cv.clientWidth, cssH: cv.clientHeight, top: r.top, left: r.left},
+    ui: {x: ub.x, y: ub.y, w: ub.width, h: ub.height, top: ub.top, bottom: ub.bottom},
+    yt: {on: ytbox.classList.contains('on'), x: yb.x, y: yb.y, w: yb.width, h: yb.height, top: yb.top, bottom: yb.bottom},
+    field: {x: L.fx0, y: L.fy0, x1: L.fx1, y1: L.fy1},
+    metaY: L.metaY, metaLast: L.metaLast, metaLeftW: L.metaLeftW, metaRightW: L.metaRightW,
+    titleY: L.titleY, titleBase: L.titleBase, subY: L.subY, legendLines: L.legendLines||0,
+    labelY: L.labelY, readY0: L.readY0, readY: L.readY, uiTop: L.uiTop,
+    ovY: L.ovY, ovH: L.ovH, ytTop: L.ytTop||0, ytH: L.ytH||0,
+    rule: L.rule, m: L.m
+  };
 }
 
 function wrapText(s, x, y, maxW, size, lh, a){
@@ -213,7 +427,8 @@ function drawField(){
   // axis: note names per semitone
   for (let r = 0; r < rows; r++){
     const mm = M_TOP - r, isC = ((mm%12)+12)%12 === 0, nat = !NAMES[((mm%12)+12)%12].includes('♯');
-    if (nat || isC) txt(noteName(mm), L.m, rowY(r), gfs*0.72, {base:'middle', a: isC?0.75:0.32});
+    const show = (L.mobile && gfs < 9) ? isC : (nat || isC);
+    if (show) txt(noteName(mm), L.m, rowY(r), gfs*0.72, {base:'middle', a: isC?0.75:0.32});
     if (isC) hline(fx0, fx1, rowY(r)+rh*0.5, 0.12);
   }
   hline(fx0, fx1, fy0, 0.5); hline(fx0, fx1, fy1, 0.5);
@@ -226,7 +441,8 @@ function drawField(){
     const x = px + (tt - t)/dtc*cw; if (x < fx0 + cw*0.3 || x > fx1 - cw*0.3) continue;
     const past = tt <= t, fade = past ? 1 : 0.2;
     // gentle fade toward the edges
-    const edge = Math.min(1, (x-fx0)/(cw*6), (fx1-x)/(cw*6));
+    const edgeN = L.mobile ? 3 : 6;
+    const edge = Math.min(1, (x-fx0)/(cw*edgeN), (fx1-x)/(cw*edgeN));
     const mm = near(S.midi, tt), r = at(S.rms, tt), b = at(S.bright, tt), on = at(S.onset, tt);
     const row = midiRow(mm);
     // above the line: sparse air flecks from brightness
@@ -252,7 +468,12 @@ function drawField(){
     ctx.fillText(g, x, rowY(row));
     ctx.font = `400 ${gfs}px ${MONO}`;
     // onset ticks in the band above the field
-    if (on > 0.35){ ctx.globalAlpha = Math.min(1,on)*0.8*fade*edge; ctx.fillRect(Math.round(x), fy0 - rh*(0.25+1.6*Math.min(1,on)), 1, rh*(0.25+1.6*Math.min(1,on)) - 2); }
+    if (on > 0.35){
+      const tick = rh*(0.25+1.6*Math.min(1,on));
+      ctx.globalAlpha = Math.min(1,on)*0.8*fade*edge;
+      if (L.mobile) ctx.fillRect(Math.round(x), fy0, 1, Math.min(rh*0.85, tick));
+      else ctx.fillRect(Math.round(x), fy0 - tick, 1, tick - 2);
+    }
   }
   ctx.globalAlpha = 1;
   // phrase boundaries
@@ -260,26 +481,47 @@ function drawField(){
     const x = px + (p.start - t)/dtc*cw; if (x < fx0 || x > fx1) return;
     for (let y = fy0; y < fy1; y += 6){ ctx.globalAlpha = 0.4; ctx.fillStyle = ink; ctx.fillRect(Math.round(x), y, 1, 3); }
     ctx.globalAlpha = 1;
-    txt('§'+pad2(i+1), x+5, fy0 + L.lh*1.0, L.fs, {a:0.75});
+    txt('§'+pad2(i+1), x+5, fy0 + (L.mobile ? Math.min(L.lh, rh*1.4) : L.lh), L.fs * (L.mobile && rh < L.fs ? 0.8 : 1), {a:0.75});
   });
   // playhead
-  vline(px, fy0 - rh*2.1, fy1 + rh*0.6, 0.9, acc);
+  vline(px, L.mobile ? fy0 : fy0 - rh*2.1, L.mobile ? fy1 : fy1 + rh*0.6, 0.9, acc);
   const mm = near(S.midi, t), row = midiRow(mm), y = rowY(row);
   ctx.fillStyle = acc; ctx.fillRect(px - L.cw*0.5, y - rh*0.5, L.cw, rh);
   ctx.font = `500 ${gfs}px ${MONO}`; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle = theme.bg;
   ctx.fillText(GLYPH[((Math.round(mm)%12)+12)%12], px, y);
   const label = `${noteName(mm)}  ${hz(mm).toFixed(1)} Hz`;
-  txt(label, px + L.cw*1.1, y - rh*0.9, L.fs, {color: acc, base:'middle'});
-  const ly = fy0 - rh*2.3 - L.fs*0.3;
-  txt(tc(t), px - 6, ly, L.fs, {color: acc, align:'right'});
-  txt('ONSETS  ·  ← ESCRITO', fx0, ly, L.fs, {a:0.45});
-  txt('POR VENIR →', fx1, ly, L.fs, {a:0.45, align:'right'});
+  if (L.mobile){
+    ctx.font = `400 ${L.fs}px ${MONO}`;
+    const lw = ctx.measureText(label).width;
+    const yLab = Math.max(fy0 + L.fs*0.6, Math.min(y - rh*0.15, fy1 - L.fs));
+    if (px + L.cw*1.1 + lw <= fx1 - 2) txt(label, px + L.cw*1.1, yLab, L.fs, {color: acc, base:'middle'});
+    else if (px - L.cw*1.1 - lw >= fx0 + 2) txt(label, px - L.cw*1.1, yLab, L.fs, {color: acc, base:'middle', align:'right'});
+    txt('← escrito', fx0, L.labelY, L.fs, {a:0.45});
+    txt('por venir →', fx1, L.labelY, L.fs, {a:0.45, align:'right'});
+  } else {
+    txt(label, px + L.cw*1.1, y - rh*0.9, L.fs, {color: acc, base:'middle'});
+    const ly = fy0 - rh*2.3 - L.fs*0.3;
+    txt(tc(t), px - 6, ly, L.fs, {color: acc, align:'right'});
+    txt('ONSETS  ·  ← ESCRITO', fx0, ly, L.fs, {a:0.45});
+    txt('POR VENIR →', fx1, ly, L.fs, {a:0.45, align:'right'});
+  }
 }
 
+function overviewCaption(){
+  const maxW = W - 2*L.m;
+  const candidates = L.mobile
+    ? ['PARTITURA COMPLETA · 04:00 → 06:30 · TOCA PARA IR', 'PARTITURA · TOCA PARA IR', 'TOCA PARA IR']
+    : ['PARTITURA COMPLETA · 04:00 → 06:30 · CLIC PARA IR'];
+  ctx.font = `400 ${L.fs}px ${MONO}`; ctx.letterSpacing = '0.05em';
+  let cap = candidates[candidates.length-1];
+  for (const c of candidates){ if (ctx.measureText(c).width <= maxW){ cap = c; break; } }
+  ctx.letterSpacing = '0px';
+  return cap;
+}
 function drawOverview(pi){
   const {m, ovY, ovH, fs} = L, ink = theme.ink, acc = theme.acc;
   const ox = m, ow = W-2*m;
-  txt('PARTITURA COMPLETA · 04:00 → 06:30 · CLIC PARA IR', ox, ovY - L.lh*0.9, fs, {a:0.55, ls:'0.05em'});
+  txt(overviewCaption(), ox, ovY - L.lh*0.9, fs, {a:0.55, ls:'0.05em'});
   PH.forEach((p,i)=>{
     const x0 = ox + p.start/DUR*ow + 2, x1 = ox + p.end/DUR*ow - 2, cur = i===pi;
     const a = cur ? 1 : 0.38;
@@ -317,18 +559,22 @@ function frame(now){
 
 // ---------- interaction ----------
 let dragging = false, dragX = 0, dragT = 0, dragOv = false;
-function inOv(x,y){ const o = L.ov; return o && x>=o.x && x<=o.x+o.w && y>=o.y && y<=o.y+o.h; }
+function inOv(x,y){ const o = L.ov; if (!o) return false; const pad = L.mobile ? 10 : 0; return x>=o.x-pad && x<=o.x+o.w+pad && y>=o.y-pad && y<=o.y+o.h+pad; }
 function seekTo(nt){ t = Math.max(0, Math.min(DUR, nt)); if (mode==='yt' && ytReady) player.seekTo(OFF+t, true); if (REC) render(); }
 cv.addEventListener('pointerdown', e => {
+  if (e.pointerType !== 'mouse' && e.cancelable) e.preventDefault();
   const r = cv.getBoundingClientRect(), x = e.clientX-r.left, y = e.clientY-r.top;
-  dragging = true; cv.setPointerCapture(e.pointerId);
+  dragging = true; try { cv.setPointerCapture(e.pointerId); } catch (err) {}
   dragOv = inOv(x,y); dragX = x; dragT = t;
   if (dragOv) seekTo((x-L.ov.x)/L.ov.w*DUR);
-});
+}, {passive:false});
 cv.addEventListener('pointermove', e => {
-  if (!dragging) return; const r = cv.getBoundingClientRect(), x = e.clientX-r.left;
+  if (!dragging) return;
+  if (e.pointerType !== 'mouse' && e.cancelable) e.preventDefault();
+  const r = cv.getBoundingClientRect(), x = e.clientX-r.left;
   if (dragOv) seekTo((x-L.ov.x)/L.ov.w*DUR); else seekTo(dragT - (x-dragX)/L.cw*L.dtc);
-});
+}, {passive:false});
+addEventListener('touchmove', e => { if ((L.mobile || dragging) && e.cancelable) e.preventDefault(); }, {passive:false});
 const endDrag = () => { dragging = false; };
 cv.addEventListener('pointerup', endDrag); cv.addEventListener('pointercancel', endDrag);
 cv.addEventListener('wheel', e => { e.preventDefault(); seekTo(t + (e.deltaY + e.deltaX)*0.01); }, {passive:false});
@@ -352,6 +598,7 @@ function syncUI(){
   document.getElementById('bTheme').textContent = theme.dark ? 'claro' : 'oscuro';
   document.getElementById('bYT').classList.toggle('on', mode==='yt');
   document.getElementById('bYT').textContent = mode==='yt' ? '♪ audio original · salir' : '♪ con audio original';
+  if (L.mobile){ layout(); if (window.__ready) render(); }
 }
 document.getElementById('bPlay').onclick = togglePlay;
 document.getElementById('bTheme').onclick = toggleTheme;
@@ -374,6 +621,7 @@ function toggleYT(){
 window.__nonino = { layout: () => ({rule: L.rule, base: L.titleBase, dpr}), setTime: v => { t = v; render(); }, pause: () => { playing = false; }, dur: DUR, phrases: PH };
 
 addEventListener('resize', () => { layout(); render(); });
+if (window.visualViewport) visualViewport.addEventListener('resize', () => { layout(); if (window.__ready) render(); });
 const fontsP = document.fonts ? Promise.all(['400 20px "Instrument Serif"','400 20px "IBM Plex Mono"','500 20px "IBM Plex Mono"','300 20px "IBM Plex Mono"'].map(f=>document.fonts.load(f, 'AÓ♯'))).catch(()=>{}) : Promise.resolve();
 Promise.race([fontsP, new Promise(r=>setTimeout(r,2500))]).then(() => {
   readTheme(); layout(); syncUI(); if (REC) playing = false; render(); if (!REC) requestAnimationFrame(frame);
