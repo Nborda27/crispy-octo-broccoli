@@ -8,7 +8,8 @@ La pieza publicada es [`index.html`](index.html), autocontenida. La fuente edita
 
 ## Controles
 
-- Arrastrar el campo, o usar la rueda, para recorrer el tiempo.
+- Arrastrar el campo, o usar la rueda, para recorrer el tiempo. En el teléfono el gesto sigue el dedo y la página no se desplaza.
+- En una pantalla estrecha la partitura ocupa el alto: los datos van en dos columnas, la leyenda queda sobre el campo, los controles en su propia fila y el video, si se abre, debajo de la melodía.
 - Clic en el panel inferior para saltar a ese instante.
 - `Espacio`: reproducir o pausar.
 - `←` / `→`: frase anterior o siguiente.
